@@ -25,8 +25,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <deque>
+#include <limits>
 
 struct ImuHRPublisher : public PacketCallback, PublisherHelperFunctions
 {
@@ -47,6 +49,9 @@ struct ImuHRPublisher : public PacketCallback, PublisherHelperFunctions
     std::deque<TimedVector> gyro_buffer;
 
     static constexpr std::size_t MAX_BUFFER_SIZE = 64;
+    static constexpr int SAMPLE_TIME_FINE_HZ = 10000;
+
+    int pair_tolerance_ticks = 20;
 
     explicit ImuHRPublisher(DriverNode::SharedPtr node_handle)
         : node(node_handle)
@@ -68,13 +73,27 @@ struct ImuHRPublisher : public PacketCallback, PublisherHelperFunctions
             "angular_velocity_stddev", angular_velocity_variance, node);
         variance_from_stddev_param(
             "linear_acceleration_stddev", linear_acceleration_variance, node);
+
+        int accel_rate = 500;
+        int gyro_rate = 500;
+        node->get_parameter("output_data_rate_acchr", accel_rate);
+        node->get_parameter("output_date_rate_gyrohr", gyro_rate);
+
+        const int reference_rate = std::max(1, std::min(accel_rate, gyro_rate));
+        pair_tolerance_ticks = std::max(
+            1,
+            static_cast<int>(std::ceil(
+                static_cast<double>(SAMPLE_TIME_FINE_HZ) /
+                static_cast<double>(reference_rate))));
+
+        RCLCPP_INFO(
+            node->get_logger(),
+            "/imu/data_hr enabled: AccHR=%d Hz, GyroHR=%d Hz, pairing tolerance=%d SampleTimeFine ticks",
+            accel_rate, gyro_rate, pair_tolerance_ticks);
     }
 
     void operator()(const XsDataPacket &packet, rclcpp::Time timestamp) override
     {
-        // AccelerationHR and RateOfTurnHR may arrive in separate Xsens packets.
-        // SampleTimeFine is used to pair measurements that belong to the same
-        // sensor sample before publishing one sensor_msgs/Imu message.
         if (!packet.containsSampleTimeFine())
         {
             RCLCPP_WARN_THROTTLE(
@@ -88,75 +107,102 @@ struct ImuHRPublisher : public PacketCallback, PublisherHelperFunctions
         if (packet.containsAccelerationHR())
         {
             const XsVector accel_hr = packet.accelerationHR();
-            storeSample(
-                acceleration_buffer,
+            acceleration_buffer.push_back({
                 sample_time_fine,
                 {accel_hr[0], accel_hr[1], accel_hr[2]},
-                timestamp);
+                timestamp});
         }
 
         if (packet.containsRateOfTurnHR())
         {
             const XsVector gyro_hr = packet.rateOfTurnHR();
-            storeSample(
-                gyro_buffer,
+            gyro_buffer.push_back({
                 sample_time_fine,
                 {gyro_hr[0], gyro_hr[1], gyro_hr[2]},
-                timestamp);
+                timestamp});
         }
 
-        publishIfMatched(sample_time_fine);
+        publishAvailablePairs();
         trimBuffers();
     }
 
 private:
-    static void storeSample(
-        std::deque<TimedVector> &buffer,
-        uint32_t sample_time_fine,
-        const std::array<double, 3> &value,
-        rclcpp::Time stamp)
+    static int64_t signedTickDifference(uint32_t from, uint32_t to)
     {
-        auto existing = std::find_if(
-            buffer.begin(), buffer.end(),
-            [sample_time_fine](const TimedVector &sample)
-            {
-                return sample.sample_time_fine == sample_time_fine;
-            });
-
-        if (existing != buffer.end())
-        {
-            existing->value = value;
-            existing->stamp = stamp;
-            return;
-        }
-
-        buffer.push_back({sample_time_fine, value, stamp});
+        return static_cast<int64_t>(static_cast<int32_t>(to - from));
     }
 
-    void publishIfMatched(uint32_t sample_time_fine)
+    void publishAvailablePairs()
     {
-        auto accel_it = std::find_if(
-            acceleration_buffer.begin(), acceleration_buffer.end(),
-            [sample_time_fine](const TimedVector &sample)
+        while (!acceleration_buffer.empty() && !gyro_buffer.empty())
+        {
+            const TimedVector &accel = acceleration_buffer.front();
+
+            auto best_gyro = gyro_buffer.end();
+            int64_t best_abs_diff = std::numeric_limits<int64_t>::max();
+
+            for (auto it = gyro_buffer.begin(); it != gyro_buffer.end(); ++it)
             {
-                return sample.sample_time_fine == sample_time_fine;
-            });
+                const int64_t diff = signedTickDifference(
+                    accel.sample_time_fine, it->sample_time_fine);
+                const int64_t abs_diff = std::llabs(diff);
 
-        auto gyro_it = std::find_if(
-            gyro_buffer.begin(), gyro_buffer.end(),
-            [sample_time_fine](const TimedVector &sample)
+                if (abs_diff < best_abs_diff)
+                {
+                    best_abs_diff = abs_diff;
+                    best_gyro = it;
+                }
+            }
+
+            if (best_gyro != gyro_buffer.end() &&
+                best_abs_diff <= pair_tolerance_ticks)
             {
-                return sample.sample_time_fine == sample_time_fine;
-            });
+                publishImu(accel, *best_gyro, best_abs_diff);
+                acceleration_buffer.pop_front();
+                gyro_buffer.erase(best_gyro);
+                continue;
+            }
 
-        if (accel_it == acceleration_buffer.end() || gyro_it == gyro_buffer.end())
-            return;
+            // If the oldest acceleration sample is already more than one
+            // nominal sample period older than the oldest gyro sample, it can
+            // no longer form the closest pair. Drop it and continue.
+            const int64_t oldest_diff = signedTickDifference(
+                accel.sample_time_fine, gyro_buffer.front().sample_time_fine);
 
-        const TimedVector accel = *accel_it;
-        const TimedVector gyro = *gyro_it;
+            if (oldest_diff > pair_tolerance_ticks)
+            {
+                RCLCPP_WARN_THROTTLE(
+                    node->get_logger(), *node->get_clock(), 5000,
+                    "Dropping unmatched AccelerationHR sample. Acc=%u, oldest Gyro=%u, delta=%ld ticks",
+                    accel.sample_time_fine,
+                    gyro_buffer.front().sample_time_fine,
+                    static_cast<long>(oldest_diff));
+                acceleration_buffer.pop_front();
+                continue;
+            }
 
+            // Gyro samples that are too old for the current acceleration sample
+            // cannot match a later acceleration sample either.
+            if (oldest_diff < -pair_tolerance_ticks)
+            {
+                gyro_buffer.pop_front();
+                continue;
+            }
+
+            // Need one more packet before deciding.
+            break;
+        }
+    }
+
+    void publishImu(
+        const TimedVector &accel,
+        const TimedVector &gyro,
+        int64_t pair_delta_ticks)
+    {
         sensor_msgs::msg::Imu msg;
-        // AccelerationHR is used as the reference timeline.
+
+        // AccelerationHR defines the output timeline. FAST-LIO consumes
+        // angular velocity and linear acceleration from this message.
         msg.header.stamp = accel.stamp;
         msg.header.frame_id = frame_id;
 
@@ -168,8 +214,7 @@ private:
         msg.angular_velocity.y = gyro.value[1];
         msg.angular_velocity.z = gyro.value[2];
 
-        // High-rate Xsens output contains acceleration and rate of turn only.
-        // Mark orientation as unavailable according to sensor_msgs/Imu.
+        // No high-rate orientation is supplied by this publisher.
         msg.orientation_covariance[0] = -1.0;
 
         msg.angular_velocity_covariance[0] = angular_velocity_variance[0];
@@ -182,8 +227,12 @@ private:
 
         pub->publish(msg);
 
-        acceleration_buffer.erase(accel_it);
-        gyro_buffer.erase(gyro_it);
+        RCLCPP_DEBUG_THROTTLE(
+            node->get_logger(), *node->get_clock(), 2000,
+            "/imu/data_hr publishing; Acc=%u, Gyro=%u, delta=%ld ticks",
+            accel.sample_time_fine,
+            gyro.sample_time_fine,
+            static_cast<long>(pair_delta_ticks));
     }
 
     void trimBuffers()
