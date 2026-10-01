@@ -168,8 +168,9 @@
         pub_mag: true
         pub_temperature: true
         pub_pressure: true
-        pub_accelerationhr: false      #High Rate Data Acceleration, when this is true, set enable_high_rate to true as well
-        pub_angular_velocity_hr: false #High Rate Data Angular Velocity,  when this is true, set enable_high_rate to true as well
+        pub_accelerationhr: false      # High-rate acceleration. Set enable_high_rate to true as well.
+        pub_angular_velocity_hr: false # High-rate angular velocity. Set enable_high_rate to true as well.
+        pub_imu_hr: false              # Combined AccelerationHR + RateOfTurnHR as sensor_msgs/Imu on /imu/data_hr. Orientation is unavailable.
         pub_transform: true
         pub_status: true
         pub_twist: true         # For GNSS/INS Version of MTI only
@@ -203,7 +204,8 @@
 
         # High Rate Data for AccelerationHR and RateOfTurn:
         # ------------------------------------------------
-        # if you want to enable high rate data, firstly change the 'enable_high_rate' to true, then change the data rate according to your sensor model.
+        # If you want to enable high-rate data, set 'enable_high_rate' to true and choose rates supported by your sensor.
+        # For /imu/data_hr, use equal accelerationHR and rateOfTurnHR rates so both values are present in the same Xsens packet.
         enable_high_rate: false
         #options for MTi-1 v2: 800, 400, 200, 160
         #options for MTi-1 v3: 1000, 500, 250, 200, 125
