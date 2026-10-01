@@ -105,7 +105,7 @@ output_data_rate_acchr: 500
 output_date_rate_gyrohr: 500
 ```
 
-The driver publishes `/imu/data_hr` as `sensor_msgs/msg/Imu`. It only publishes when AccelerationHR and RateOfTurnHR are present in the same Xsens data packet, so equal HR rates are recommended. `orientation_covariance[0]` is set to `-1` because high-rate orientation is not provided.
+The driver publishes `/imu/data_hr` as `sensor_msgs/msg/Imu`. AccelerationHR and RateOfTurnHR may arrive in separate Xsens packets, so the driver pairs them using `SampleTimeFine` and publishes only matched samples. Equal HR rates are recommended. `orientation_covariance[0]` is set to `-1` because high-rate orientation is not provided.
 
 ## How to Use:
 open first terminal:
@@ -221,7 +221,7 @@ or ``ros2 topic echo /status`` to check the RTK Fix type, it should be 1(RTK Flo
 | imu/acceleration         | geometry_msgs/Vector3Stamped    | calibrated acceleration                                                                                                                       | 1-400Hz(MTi-600 and MTi-100 series), 1-100Hz(MTi-1 series)                      |
 | imu/angular_velocity     | geometry_msgs/Vector3Stamped    | calibrated angular velocity                                                                                                                   | 1-400Hz(MTi-600 and MTi-100 series), 1-100Hz(MTi-1 series)                      |
 | imu/data                 | sensor_msgs/Imu                 | quaternion, calibrated angular velocity and acceleration                                                                                      | 1-400Hz(MTi-600 and MTi-100 series), 1-100Hz(MTi-1 series)                      |
-| imu/data_hr              | sensor_msgs/Imu                 | combined high-rate AccelerationHR and RateOfTurnHR from the same Xsens packet; orientation is marked unavailable                              | high-rate output frequency supported by the device                              |
+| imu/data_hr              | sensor_msgs/Imu                 | combined high-rate AccelerationHR and RateOfTurnHR paired by SampleTimeFine; orientation is marked unavailable                              | high-rate output frequency supported by the device                              |
 | imu/dq                   | geometry_msgs/QuaternionStamped | integrated angular velocity from sensor (in quaternion representation)                                                                        | 1-400Hz(MTi-600 and MTi-100 series), 1-100Hz(MTi-1 series)                      |
 | imu/dv                   | geometry_msgs/Vector3Stamped    | integrated acceleration from sensor                                                                                                           | 1-400Hz(MTi-600 and MTi-100 series), 1-100Hz(MTi-1 series)                      |
 | imu/mag                  | sensor_msgs/MagneticField    | calibrated magnetic field                                                                                                                     | 1-100Hz                                                                         |
