@@ -47,6 +47,7 @@
 #include "messagepublishers/freeaccelerationpublisher.h"
 #include "messagepublishers/gnsspublisher.h"
 #include "messagepublishers/imupublisher.h"
+#include "messagepublishers/imuhrpublisher.h"
 #include "messagepublishers/magneticfieldpublisher.h"
 #include "messagepublishers/orientationincrementspublisher.h"
 #include "messagepublishers/orientationpublisher.h"
@@ -169,6 +170,10 @@ void XdaInterface::registerPublishers()
 	if (m_node->get_parameter("pub_angular_velocity_hr", should_publish) && should_publish)
 	{
 		registerCallback(new AngularVelocityHRPublisher(m_node));
+	}
+	if (m_node->get_parameter("pub_imu_hr", should_publish) && should_publish)
+	{
+		registerCallback(new ImuHRPublisher(m_node));
 	}
 
 	if(isDeviceVruAhrs || isDeviceGnss)
@@ -1613,6 +1618,8 @@ void XdaInterface::declareCommonParameters()
 		m_node->declare_parameter("pub_accelerationhr", should_publish);
 	if (!m_node->has_parameter("pub_angular_velocity_hr"))
 		m_node->declare_parameter("pub_angular_velocity_hr", should_publish);
+	if (!m_node->has_parameter("pub_imu_hr"))
+		m_node->declare_parameter("pub_imu_hr", false);
 	if (!m_node->has_parameter("pub_transform"))
 		m_node->declare_parameter("pub_transform", should_publish);
 	if (!m_node->has_parameter("pub_status"))
